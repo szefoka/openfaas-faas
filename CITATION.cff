@@ -3,6 +3,8 @@ message: "If you use this software, please cite it as below."
 authors:
   - family-names: David
     given-names: Balla
+    orcid: ""
 title: "openfaas-faas-istio-extension"
 version: 2.0.4
+doi: ""
 date-released: 2023-03-03
