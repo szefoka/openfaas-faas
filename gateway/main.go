@@ -15,6 +15,7 @@ import (
 	"github.com/openfaas/faas/gateway/metrics"
 	"github.com/openfaas/faas/gateway/pkg/middleware"
 	"github.com/openfaas/faas/gateway/plugin"
+	"github.com/openfaas/faas/gateway/probing"
 	"github.com/openfaas/faas/gateway/scaling"
 	"github.com/openfaas/faas/gateway/types"
 	"github.com/openfaas/faas/gateway/version"
@@ -82,9 +83,13 @@ func main() {
 		FunctionNamespace: config.Namespace,
 	}
 
+	prometheusServiceNotifier := handlers.PrometheusServiceNotifier{
+		ServiceMetrics: metricsOptions.ServiceMetrics,
+	}
+
 	functionNotifiers := []handlers.HTTPNotifier{loggingNotifier, prometheusNotifier}
-	forwardingNotifiers := []handlers.HTTPNotifier{loggingNotifier}
-	quietNotifier := []handlers.HTTPNotifier{}
+	forwardingNotifiers := []handlers.HTTPNotifier{loggingNotifier, prometheusServiceNotifier}
+	quietNotifier := []handlers.HTTPNotifier{prometheusServiceNotifier}
 
 	urlResolver := middleware.SingleHostBaseURLResolver{BaseURL: config.FunctionsProviderURL.String()}
 	var functionURLResolver middleware.BaseURLResolver
@@ -92,14 +97,24 @@ func main() {
 	nilURLTransformer := middleware.TransparentURLPathTransformer{}
 	trimURLTransformer := middleware.FunctionPrefixTrimmingURLPathTransformer{}
 
-	functionURLResolver = urlResolver
-	functionURLTransformer = nilURLTransformer
+	if config.DirectFunctions {
+		functionURLResolver = middleware.FunctionAsHostBaseURLResolver{
+			FunctionSuffix:    config.DirectFunctionsSuffix,
+			FunctionNamespace: config.Namespace,
+		}
+		functionURLTransformer = trimURLTransformer
+	} else {
+		functionURLResolver = urlResolver
+		functionURLTransformer = nilURLTransformer
+	}
 
 	var serviceAuthInjector middleware.AuthInjector
 
 	if config.UseBasicAuth {
 		serviceAuthInjector = &middleware.BasicAuthInjector{Credentials: credentials}
 	}
+
+	decorateExternalAuth := handlers.MakeExternalAuthHandler
 
 	// externalServiceQuery is used to query metadata from the provider about a function
 	externalServiceQuery := plugin.NewExternalServiceQuery(*config.FunctionsProviderURL, serviceAuthInjector)
@@ -140,6 +155,13 @@ func main() {
 
 	functionProxy := faasHandlers.Proxy
 
+	if config.ProbeFunctions {
+		prober := probing.NewFunctionProber(cachedFunctionQuery, functionURLResolver)
+		// Default of 5 seconds between refreshing probes for function invocations
+		probeCache := probing.NewProbeCache(time.Second * 5)
+		functionProxy = handlers.MakeProbeHandler(prober, probeCache, functionURLResolver, functionProxy, config.Namespace)
+	}
+
 	if config.ScaleFromZero {
 		scalingFunctionCache := scaling.NewFunctionCache(scalingConfig.CacheExpiry)
 		scaler := scaling.NewFunctionScaler(scalingConfig, scalingFunctionCache)
@@ -147,9 +169,7 @@ func main() {
 	}
 
 	if config.UseNATS() {
-		log.Println("Async enabled: Using NATS Streaming")
-		log.Println("Deprecation Notice: NATS Streaming is no longer maintained and won't receive updates from June 2023")
-
+		log.Println("Async enabled: Using NATS Streaming.")
 		maxReconnect := 60
 		interval := time.Second * 2
 
@@ -172,27 +192,27 @@ func main() {
 
 	if credentials != nil {
 		faasHandlers.Alert =
-			auth.DecorateWithBasicAuth(faasHandlers.Alert, credentials)
+			decorateExternalAuth(faasHandlers.Alert, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.UpdateFunction =
-			auth.DecorateWithBasicAuth(faasHandlers.UpdateFunction, credentials)
+			decorateExternalAuth(faasHandlers.UpdateFunction, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.DeleteFunction =
-			auth.DecorateWithBasicAuth(faasHandlers.DeleteFunction, credentials)
+			decorateExternalAuth(faasHandlers.DeleteFunction, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.DeployFunction =
-			auth.DecorateWithBasicAuth(faasHandlers.DeployFunction, credentials)
+			decorateExternalAuth(faasHandlers.DeployFunction, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.ListFunctions =
-			auth.DecorateWithBasicAuth(faasHandlers.ListFunctions, credentials)
+			decorateExternalAuth(faasHandlers.ListFunctions, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.ScaleFunction =
-			auth.DecorateWithBasicAuth(faasHandlers.ScaleFunction, credentials)
+			decorateExternalAuth(faasHandlers.ScaleFunction, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.FunctionStatus =
-			auth.DecorateWithBasicAuth(faasHandlers.FunctionStatus, credentials)
+			decorateExternalAuth(faasHandlers.FunctionStatus, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.InfoHandler =
-			auth.DecorateWithBasicAuth(faasHandlers.InfoHandler, credentials)
+			decorateExternalAuth(faasHandlers.InfoHandler, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.SecretHandler =
-			auth.DecorateWithBasicAuth(faasHandlers.SecretHandler, credentials)
+			decorateExternalAuth(faasHandlers.SecretHandler, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.LogProxyHandler =
-			auth.DecorateWithBasicAuth(faasHandlers.LogProxyHandler, credentials)
+			decorateExternalAuth(faasHandlers.LogProxyHandler, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 		faasHandlers.NamespaceListerHandler =
-			auth.DecorateWithBasicAuth(faasHandlers.NamespaceListerHandler, credentials)
+			decorateExternalAuth(faasHandlers.NamespaceListerHandler, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)
 	}
 
 	r := mux.NewRouter()
@@ -232,11 +252,9 @@ func main() {
 	uiHandler := http.StripPrefix("/ui", fsCORS)
 	if credentials != nil {
 		r.PathPrefix("/ui/").Handler(
-			auth.DecorateWithBasicAuth(uiHandler.ServeHTTP, credentials)).
-			Methods(http.MethodGet)
+			decorateExternalAuth(uiHandler.ServeHTTP, config.UpstreamTimeout, config.AuthProxyURL, config.AuthProxyPassBody)).Methods(http.MethodGet)
 	} else {
-		r.PathPrefix("/ui/").Handler(uiHandler).
-			Methods(http.MethodGet)
+		r.PathPrefix("/ui/").Handler(uiHandler).Methods(http.MethodGet)
 	}
 
 	//Start metrics server in a goroutine

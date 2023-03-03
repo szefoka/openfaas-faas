@@ -101,12 +101,6 @@ type subscription struct {
 	inboxSub *nats.Subscription
 	opts     SubscriptionOptions
 	cb       MsgHandler
-	// closed indicate that sub.Close() was invoked, but fullyClosed
-	// is only set if the close/unsub protocol was successful. This
-	// allow the user to be able to call sub.Close() several times
-	// in case an error is returned.
-	closed      bool
-	fullyClosed bool
 }
 
 // SubscriptionOption is a function on the options for a subscription.
@@ -253,16 +247,6 @@ func (sc *conn) subscribe(subject, qgroup string, cb MsgHandler, options ...Subs
 	sc.subMap[sub.inbox] = sub
 	sc.Unlock()
 
-	doClean := true
-	defer func() {
-		if doClean {
-			sc.Lock()
-			//Un-register subscription.
-			delete(sc.subMap, sub.inbox)
-			sc.Unlock()
-		}
-	}()
-
 	// Hold lock throughout.
 	sub.Lock()
 	defer sub.Unlock()
@@ -334,9 +318,6 @@ func (sc *conn) subscribe(subject, qgroup string, cb MsgHandler, options ...Subs
 		return nil, errors.New(r.Error)
 	}
 	sub.ackInbox = r.AckInbox
-
-	// Prevent cleanup on exit.
-	doClean = false
 
 	return sub, nil
 }
@@ -433,22 +414,15 @@ func (sub *subscription) SetPendingLimits(msgLimit, bytesLimit int) error {
 // given boolean.
 func (sub *subscription) closeOrUnsubscribe(doClose bool) error {
 	sub.Lock()
-	// If we are fully closed, return error indicating that the
-	// subscription is invalid. Note that conn.Close() in this case
-	// returns nil, but keeping behavior same so we don't have breaking change.
-	if sub.fullyClosed {
+	sc := sub.sc
+	if sc == nil {
+		// Already closed.
 		sub.Unlock()
 		return ErrBadSubscription
 	}
-	wasClosed := sub.closed
-	// If this is the very first Close() call, do some internal cleanup,
-	// otherwise, simply send the close protocol message.
-	if !wasClosed {
-		sub.closed = true
-		sub.inboxSub.Unsubscribe()
-		sub.inboxSub = nil
-	}
-	sc := sub.sc
+	sub.sc = nil
+	sub.inboxSub.Unsubscribe()
+	sub.inboxSub = nil
 	sub.Unlock()
 
 	sc.Lock()
@@ -456,9 +430,8 @@ func (sub *subscription) closeOrUnsubscribe(doClose bool) error {
 		sc.Unlock()
 		return ErrConnectionClosed
 	}
-	if !wasClosed {
-		delete(sc.subMap, sub.inbox)
-	}
+
+	delete(sc.subMap, sub.inbox)
 	reqSubject := sc.unsubRequests
 	if doClose {
 		reqSubject = sc.subCloseRequests
@@ -491,13 +464,10 @@ func (sub *subscription) closeOrUnsubscribe(doClose bool) error {
 	if err := r.Unmarshal(reply.Data); err != nil {
 		return err
 	}
-	// As long as we got a valid response, we consider the subscription fully closed.
-	sub.Lock()
-	sub.fullyClosed = true
-	sub.Unlock()
 	if r.Error != "" {
 		return errors.New(r.Error)
 	}
+
 	return nil
 }
 
@@ -523,14 +493,13 @@ func (msg *Msg) Ack() error {
 	ackSubject := sub.ackInbox
 	isManualAck := sub.opts.ManualAcks
 	sc := sub.sc
-	closed := sub.closed
 	sub.RUnlock()
 
 	// Check for error conditions.
 	if !isManualAck {
 		return ErrManualAck
 	}
-	if closed {
+	if sc == nil {
 		return ErrBadSubscription
 	}
 

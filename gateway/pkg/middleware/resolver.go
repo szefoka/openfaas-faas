@@ -58,6 +58,8 @@ func (s SingleHostBaseURLResolver) Resolve(r *http.Request) string {
 	if strings.HasSuffix(baseURL, "/") {
 		baseURL = baseURL[0 : len(baseURL)-1]
 	}
+	fmt.Println("SingleHostBaseURLResolver")
+	fmt.Println(baseURL)
 	return baseURL
 }
 
@@ -68,7 +70,7 @@ type FunctionAsHostBaseURLResolver struct {
 }
 
 // Resolve the base URL for a request
-func (f FunctionAsHostBaseURLResolver) Resolve(r *http.Request) string {
+/*func (f FunctionAsHostBaseURLResolver) Resolve(r *http.Request) string {
 	svcName := GetServiceName(r.URL.Path)
 
 	const watchdogPort = 8080
@@ -82,7 +84,30 @@ func (f FunctionAsHostBaseURLResolver) Resolve(r *http.Request) string {
 		}
 	}
 
+	fmt.Println("FunctionAsHostBaseURLResolver")
+	fmt.Println("http://%s%s:%d", svcName, suffix, watchdogPort)
 	return fmt.Sprintf("http://%s%s:%d", svcName, suffix, watchdogPort)
+}*/
+
+// Resolve the base URL for a request
+func (f FunctionAsHostBaseURLResolver) Resolve(r *http.Request) string {
+        svcName := GetServiceName(r.URL.Path)
+
+        const watchdogPort = 8080
+        var suffix string
+
+        if len(f.FunctionSuffix) > 0 {
+                if index := strings.LastIndex(svcName, "."); index > -1 && len(svcName) > index+1 {
+                        suffix = strings.Replace(f.FunctionSuffix, f.FunctionNamespace, "", -1)
+                } else {
+                        suffix = "." + f.FunctionSuffix
+                }
+        }
+
+        fmt.Println("FunctionAsHostBaseURLResolver")
+        fmt.Println("http://%s%s:%d", svcName, suffix, watchdogPort)
+	r.Host = svcName+"."+f.FunctionNamespace
+        return fmt.Sprintf("http://istio-ingressgateway.istio-system.svc.cluster.local:80")
 }
 
 func (f FunctionAsHostBaseURLResolver) BuildURL(function, namespace, healthPath string, directFunctions bool) string {

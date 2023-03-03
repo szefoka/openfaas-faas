@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -128,6 +129,9 @@ func (ReadConfig) Read(hasEnv HasEnv) (*GatewayConfig, error) {
 		cfg.PrometheusHost = prometheusHost
 	}
 
+	cfg.DirectFunctions = parseBoolValue(hasEnv.Getenv("direct_functions"))
+	cfg.DirectFunctionsSuffix = hasEnv.Getenv("direct_functions_suffix")
+
 	cfg.UseBasicAuth = parseBoolValue(hasEnv.Getenv("basic_auth"))
 
 	secretPath := hasEnv.Getenv("secret_mount_path")
@@ -164,6 +168,14 @@ func (ReadConfig) Read(hasEnv HasEnv) (*GatewayConfig, error) {
 	cfg.AuthProxyPassBody = parseBoolValue(hasEnv.Getenv("auth_proxy_pass_body"))
 
 	cfg.Namespace = hasEnv.Getenv("function_namespace")
+
+	if len(cfg.DirectFunctionsSuffix) > 0 && len(cfg.Namespace) > 0 {
+		if strings.HasPrefix(cfg.DirectFunctionsSuffix, cfg.Namespace) == false {
+			return nil, fmt.Errorf("function_namespace must be a sub-string of direct_functions_suffix")
+		}
+	}
+
+	cfg.ProbeFunctions = parseBoolValue(hasEnv.Getenv("probe_functions"))
 
 	return &cfg, nil
 }
@@ -204,6 +216,12 @@ type GatewayConfig struct {
 	// Port to connect to Prometheus.
 	PrometheusPort int
 
+	// If set to true we will access upstream functions directly rather than through the upstream provider
+	DirectFunctions bool
+
+	// If set this will be used to resolve functions directly
+	DirectFunctionsSuffix string
+
 	// If set, reads secrets from file-system for enabling basic auth.
 	UseBasicAuth bool
 
@@ -227,6 +245,9 @@ type GatewayConfig struct {
 
 	// Namespace for endpoints
 	Namespace string
+
+	// ProbeFunctions requires the gateway to probe the health endpoint of a function before invoking it
+	ProbeFunctions bool
 }
 
 // UseNATS Use NATSor not

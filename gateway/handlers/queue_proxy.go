@@ -6,7 +6,6 @@ package handlers
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,16 +21,15 @@ import (
 // MakeQueuedProxy accepts work onto a queue
 func MakeQueuedProxy(metrics metrics.MetricOptions, queuer ftypes.RequestQueuer, pathTransformer middleware.URLPathTransformer, defaultNS string, functionQuery scaling.FunctionQuery) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var body []byte
 		if r.Body != nil {
 			defer r.Body.Close()
+		}
 
-			var err error
-			body, err = ioutil.ReadAll(r.Body)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
+		body, err := ioutil.ReadAll(r.Body)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 
 		callbackURL, err := getCallbackURLHeader(r.Header)
@@ -55,9 +53,8 @@ func MakeQueuedProxy(metrics metrics.MetricOptions, queuer ftypes.RequestQueuer,
 		}
 
 		if err = queuer.Queue(req); err != nil {
-			log.Printf("Error queuing request: %v", err)
-			http.Error(w, fmt.Sprintf("Error queuing request: %s", err.Error()),
-				http.StatusInternalServerError)
+			fmt.Printf("Queue error: %v\n", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 

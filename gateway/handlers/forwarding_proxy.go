@@ -30,8 +30,12 @@ func MakeForwardingProxyHandler(proxy *types.HTTPClientReverseProxy,
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		baseURL := baseURLResolver.Resolve(r)
+		fmt.Println("HOST!!!!!")
+		fmt.Println(r.Host)
 		originalURL := r.URL.String()
 		requestURL := urlPathTransformer.Transform(r)
+                fmt.Println("baseURL!!!")
+		fmt.Println(baseURL)
 
 		for _, notifier := range notifiers {
 			notifier.Notify(r.Method, requestURL, originalURL, http.StatusProcessing, "started", time.Second*0)
@@ -54,7 +58,8 @@ func MakeForwardingProxyHandler(proxy *types.HTTPClientReverseProxy,
 
 func buildUpstreamRequest(r *http.Request, baseURL string, requestURL string) *http.Request {
 	url := baseURL + requestURL
-
+        fmt.Println("buildUpstreamRequest!!!!!!!!")
+	fmt.Println(url)
 	if len(r.URL.RawQuery) > 0 {
 		url = fmt.Sprintf("%s?%s", url, r.URL.RawQuery)
 	}
@@ -75,6 +80,10 @@ func buildUpstreamRequest(r *http.Request, baseURL string, requestURL string) *h
 	if r.Body != nil {
 		upstreamReq.Body = r.Body
 	}
+	upstreamReq.Host = r.Host
+	fmt.Println("HOST!!!!!!!!!!!!!!!!!!")
+	fmt.Println(r.Host)
+	fmt.Println(upstreamReq.Host)
 
 	return upstreamReq
 }
@@ -88,6 +97,11 @@ func forwardRequest(w http.ResponseWriter,
 	writeRequestURI bool,
 	serviceAuthInjector middleware.AuthInjector) (int, error) {
 
+        fmt.Println("BaseURL:")
+	fmt.Println(baseURL)
+        fmt.Println("RequestRL:")
+        fmt.Println(requestURL)
+
 	upstreamReq := buildUpstreamRequest(r, baseURL, requestURL)
 	if upstreamReq.Body != nil {
 		defer upstreamReq.Body.Close()
@@ -97,9 +111,9 @@ func forwardRequest(w http.ResponseWriter,
 		serviceAuthInjector.Inject(upstreamReq)
 	}
 
-	if writeRequestURI {
-		log.Printf("forwardRequest: %s %s\n", upstreamReq.Host, upstreamReq.URL.String())
-	}
+	//if writeRequestURI {
+	log.Printf("forwardRequest: %s %s\n", upstreamReq.Host, upstreamReq.URL.String())
+	//}
 
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
